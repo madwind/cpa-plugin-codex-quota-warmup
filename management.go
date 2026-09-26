@@ -85,7 +85,7 @@ func renderStatusPage(snapshot runtimeSnapshot) string {
 		workerLabel = "Checking"
 	}
 
-	out.WriteString(`<div class="header"><div><h1 class="title">Codex Quota Warmup</h1><p class="subtitle">Background quota-window warm-up status. This page is read-only and requires no Management Key.</p></div><span class="badge"><span class="dot ` + workerClass + `"></span>` + html.EscapeString(workerLabel) + `</span></div>`)
+	out.WriteString(`<div class="header"><div><h1 class="title">Codex Quota Warmup</h1><p class="subtitle">Background quota-window warm-up status. This page is read-only and uses no management authentication.</p></div><span class="badge"><span class="dot ` + workerClass + `"></span>` + html.EscapeString(workerLabel) + `</span></div>`)
 
 	writeMetric := func(label, value, sub string) {
 		out.WriteString(`<div class="card metric"><div class="metric-label">` + html.EscapeString(label) + `</div><div class="metric-value">` + html.EscapeString(value) + `</div>`)
