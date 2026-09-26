@@ -16,17 +16,9 @@ env:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            goarch: amd64
-          - runner: ubuntu-24.04-arm
-            goarch: arm64
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -40,6 +32,12 @@ jobs:
           test -n "$version"
           echo "version=${version#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Download dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          go mod download
+
       - name: Verify
         shell: bash
         run: |
@@ -50,18 +48,20 @@ jobs:
       - name: Build and package
         shell: bash
         env:
-          GOARCH: ${{ matrix.goarch }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p package dist
-          CGO_ENABLED=1 GOOS=linux GOARCH="$GOARCH"             go build -buildmode=c-shared -trimpath             -ldflags="-s -w -X main.pluginVersion=${VERSION}"             -o "package/${PLUGIN_ID}.so" .
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+            go build -buildmode=c-shared -trimpath \
+            -ldflags="-s -w -X main.pluginVersion=${VERSION}" \
+            -o "package/${PLUGIN_ID}.so" .
           rm -f "package/${PLUGIN_ID}.h"
-          (cd package && zip -q "../dist/${PLUGIN_ID}_${VERSION}_linux_${GOARCH}.zip" "${PLUGIN_ID}.so")
+          (cd package && zip -q "../dist/${PLUGIN_ID}_${VERSION}_linux_amd64.zip" "${PLUGIN_ID}.so")
 
       - uses: actions/upload-artifact@v4
         with:
-          name: codex-quota-warmup_linux_${{ matrix.goarch }}
+          name: codex-quota-warmup_linux_amd64
           path: dist/*.zip
           if-no-files-found: error
 
@@ -70,14 +70,13 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
       - name: Verify tag
-        id: version
         shell: bash
         run: |
           set -euo pipefail
@@ -87,7 +86,6 @@ jobs:
             echo "tag $tag does not match registry version $version" >&2
             exit 1
           fi
-          echo "version=${version#v}" >> "$GITHUB_OUTPUT"
 
       - name: Generate checksums
         shell: bash
@@ -105,5 +103,9 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/*               --repo "$GITHUB_REPOSITORY"               --target "$GITHUB_SHA"               --title "$GITHUB_REF_NAME"               --generate-notes
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
           fi
