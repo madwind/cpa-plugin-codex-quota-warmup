@@ -180,7 +180,7 @@ func pluginRegistration() registration {
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "interval", Type: pluginapi.ConfigFieldTypeString, Description: "Quota polling interval. Default: 30m."},
 				{Name: "initial_delay", Type: pluginapi.ConfigFieldTypeString, Description: "Delay before the first quota check. Default: 15s."},
-				{Name: "model", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"gpt-6-luna", "gpt-5.6-luna", "gpt-5.5", "gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"}, Description: "Codex model used for the warm-up request. Default: gpt-5.6-luna."},
+				{Name: "model", Type: pluginapi.ConfigFieldTypeString, Description: "Codex model used for the warm-up request. Default: gpt-5.6-luna."},
 				{Name: "ping_text", Type: pluginapi.ConfigFieldTypeString, Description: "Warm-up prompt. Default: ping."},
 				{Name: "max_output_tokens", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum output tokens for the warm-up request. Default: 16."},
 				{Name: "full_used_percent", Type: pluginapi.ConfigFieldTypeNumber, Description: "Warm when 5h used_percent is at or below this value. Default: 0."},
