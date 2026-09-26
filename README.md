@@ -120,10 +120,9 @@ No access token, refresh token, account token, Management Key, or Telegram token
 
 ## Build
 
-The repository workflow builds only the platforms needed for typical CPA Linux deployments:
+The repository workflow currently builds only:
 
 - linux/amd64
-- linux/arm64
 
 Local Linux build:
 
@@ -143,7 +142,6 @@ GitHub Actions creates the standard CPA Plugin Store release assets:
 
 ```text
 codex-quota-warmup_0.1.0_linux_amd64.zip
-codex-quota-warmup_0.1.0_linux_arm64.zip
 checksums.txt
 ```
 
