@@ -1,0 +1,253 @@
+package main
+
+/*
+#include <stdint.h>
+#include <stdlib.h>
+
+typedef struct {
+    void* ptr;
+    size_t len;
+} cliproxy_buffer;
+
+typedef int (*cliproxy_host_call_fn)(void*, const char*, const uint8_t*, size_t, cliproxy_buffer*);
+typedef void (*cliproxy_host_free_fn)(void*, size_t);
+
+typedef struct {
+    uint32_t abi_version;
+    void* host_ctx;
+    cliproxy_host_call_fn call;
+    cliproxy_host_free_fn free_buffer;
+} cliproxy_host_api;
+
+typedef int (*cliproxy_plugin_call_fn)(char*, uint8_t*, size_t, cliproxy_buffer*);
+typedef void (*cliproxy_plugin_free_fn)(void*, size_t);
+typedef void (*cliproxy_plugin_shutdown_fn)(void);
+
+typedef struct {
+    uint32_t abi_version;
+    cliproxy_plugin_call_fn call;
+    cliproxy_plugin_free_fn free_buffer;
+    cliproxy_plugin_shutdown_fn shutdown;
+} cliproxy_plugin_api;
+
+extern int cliproxyPluginCall(char*, uint8_t*, size_t, cliproxy_buffer*);
+extern void cliproxyPluginFree(void*, size_t);
+extern void cliproxyPluginShutdown(void);
+
+static const cliproxy_host_api* stored_host;
+
+static void store_host_api(const cliproxy_host_api* host) {
+    stored_host = host;
+}
+
+static int call_host_api(const char* method, const uint8_t* request, size_t request_len, cliproxy_buffer* response) {
+    if (stored_host == NULL || stored_host->call == NULL) {
+        return 1;
+    }
+    return stored_host->call(stored_host->host_ctx, method, request, request_len, response);
+}
+
+static void free_host_buffer(void* ptr, size_t len) {
+    if (stored_host != NULL && stored_host->free_buffer != NULL && ptr != NULL) {
+        stored_host->free_buffer(ptr, len);
+    }
+}
+*/
+import "C"
+
+import (
+	"encoding/json"
+	"fmt"
+	"unsafe"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+)
+
+const (
+	pluginID   = "codex-quota-warmup"
+	pluginName = "Codex Quota Warmup"
+	pluginRepo = "https://github.com/madwind/cpa-plugin-codex-quota-warmup"
+)
+
+var pluginVersion = "0.1.0"
+
+type envelope struct {
+	OK     bool            `json:"ok"`
+	Result json.RawMessage `json:"result,omitempty"`
+	Error  *envelopeError  `json:"error,omitempty"`
+}
+
+type envelopeError struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Retryable bool   `json:"retryable,omitempty"`
+}
+
+type lifecycleRequest struct {
+	ConfigYAML []byte `json:"config_yaml"`
+}
+
+type registration struct {
+	SchemaVersion uint32                   `json:"schema_version"`
+	Metadata      pluginapi.Metadata       `json:"metadata"`
+	Capabilities  registrationCapabilities `json:"capabilities"`
+}
+
+type registrationCapabilities struct {
+	ManagementAPI bool `json:"management_api"`
+}
+
+func main() {}
+
+//export cliproxy_plugin_init
+func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) C.int {
+	if host == nil || plugin == nil {
+		return 1
+	}
+	C.store_host_api(host)
+	plugin.abi_version = C.uint32_t(pluginabi.ABIVersion)
+	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)
+	plugin.free_buffer = C.cliproxy_plugin_free_fn(C.cliproxyPluginFree)
+	plugin.shutdown = C.cliproxy_plugin_shutdown_fn(C.cliproxyPluginShutdown)
+	return 0
+}
+
+//export cliproxyPluginCall
+func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t, response *C.cliproxy_buffer) C.int {
+	if response != nil {
+		response.ptr = nil
+		response.len = 0
+	}
+	if method == nil {
+		writeResponse(response, errorEnvelope("invalid_method", "method is required"))
+		return 1
+	}
+
+	var requestBytes []byte
+	if request != nil && requestLen > 0 {
+		requestBytes = C.GoBytes(unsafe.Pointer(request), C.int(requestLen))
+	}
+
+	raw, err := handleMethod(C.GoString(method), requestBytes)
+	if err != nil {
+		writeResponse(response, errorEnvelope("plugin_error", err.Error()))
+		return 1
+	}
+	writeResponse(response, raw)
+	return 0
+}
+
+//export cliproxyPluginFree
+func cliproxyPluginFree(ptr unsafe.Pointer, _ C.size_t) {
+	if ptr != nil {
+		C.free(ptr)
+	}
+}
+
+//export cliproxyPluginShutdown
+func cliproxyPluginShutdown() {
+	stopWorker()
+}
+
+func handleMethod(method string, request []byte) ([]byte, error) {
+	switch method {
+	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
+		if err := configurePlugin(request); err != nil {
+			return nil, err
+		}
+		return okEnvelope(pluginRegistration())
+	case pluginabi.MethodManagementRegister:
+		return okEnvelope(managementRegistration())
+	case pluginabi.MethodManagementHandle:
+		return handleManagementRPC(request)
+	case pluginabi.MethodPluginShutdown:
+		stopWorker()
+		return okEnvelope(map[string]any{"status": "stopped"})
+	default:
+		return errorEnvelope("unknown_method", "unknown method: "+method), nil
+	}
+}
+
+func pluginRegistration() registration {
+	return registration{
+		SchemaVersion: pluginabi.SchemaVersion,
+		Metadata: pluginapi.Metadata{
+			Name:             pluginName,
+			Version:          pluginVersion,
+			Author:           "madwind",
+			GitHubRepository: pluginRepo,
+			ConfigFields: []pluginapi.ConfigField{
+				{Name: "interval", Type: pluginapi.ConfigFieldTypeString, Description: "Quota polling interval. Default: 30m."},
+				{Name: "initial_delay", Type: pluginapi.ConfigFieldTypeString, Description: "Delay before the first quota check. Default: 15s."},
+				{Name: "model", Type: pluginapi.ConfigFieldTypeString, Description: "Codex model used for the warm-up request. Default: gpt-5.6-luna."},
+				{Name: "ping_text", Type: pluginapi.ConfigFieldTypeString, Description: "Warm-up prompt. Default: ping."},
+				{Name: "max_output_tokens", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum output tokens for the warm-up request. Default: 16."},
+				{Name: "full_used_percent", Type: pluginapi.ConfigFieldTypeNumber, Description: "Warm when 5h used_percent is at or below this value. Default: 0."},
+				{Name: "min_warm_interval", Type: pluginapi.ConfigFieldTypeString, Description: "Fallback duplicate guard when quota percentages round to 0. Default: 4h45m."},
+				{Name: "state_file", Type: pluginapi.ConfigFieldTypeString, Description: "Optional persistent state file. Recommended for containers."},
+				{Name: "telegram_chat_id", Type: pluginapi.ConfigFieldTypeString, Description: "Optional Telegram chat ID. Can also use CPA_CODEX_WARMUP_TELEGRAM_CHAT_ID."},
+				{Name: "notify_success", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Send Telegram after a successful automatic warm-up. Default: true."},
+				{Name: "notify_failure", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Send Telegram when an automatic warm-up fails. Default: true."},
+				{Name: "notify_poll_failures", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Send Telegram for quota polling failures. Default: false."},
+			},
+		},
+		Capabilities: registrationCapabilities{ManagementAPI: true},
+	}
+}
+
+func okEnvelope(v any) ([]byte, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(envelope{OK: true, Result: raw})
+}
+
+func errorEnvelope(code, message string) []byte {
+	raw, _ := json.Marshal(envelope{OK: false, Error: &envelopeError{Code: code, Message: message}})
+	return raw
+}
+
+func writeResponse(response *C.cliproxy_buffer, raw []byte) {
+	if response == nil || len(raw) == 0 {
+		return
+	}
+	ptr := C.CBytes(raw)
+	if ptr == nil {
+		return
+	}
+	response.ptr = ptr
+	response.len = C.size_t(len(raw))
+}
+
+func callHostRaw(method string, raw []byte) (int, []byte, error) {
+	cMethod := C.CString(method)
+	defer C.free(unsafe.Pointer(cMethod))
+
+	var requestPtr *C.uint8_t
+	var cPayload unsafe.Pointer
+	if len(raw) > 0 {
+		cPayload = C.CBytes(raw)
+		if cPayload == nil {
+			return 0, nil, fmt.Errorf("allocate host callback payload %s", method)
+		}
+		defer C.free(cPayload)
+		requestPtr = (*C.uint8_t)(cPayload)
+	}
+
+	var response C.cliproxy_buffer
+	code := int(C.call_host_api(cMethod, requestPtr, C.size_t(len(raw)), &response))
+	var responseBytes []byte
+	if response.ptr != nil && response.len > 0 {
+		responseBytes = C.GoBytes(response.ptr, C.int(response.len))
+	}
+	if response.ptr != nil {
+		C.free_host_buffer(response.ptr, response.len)
+	}
+	return code, responseBytes, nil
+}
+
+func pluginLog(format string, args ...any) {
+	fmt.Printf("[%s] %s\n", pluginID, fmt.Sprintf(format, args...))
+}

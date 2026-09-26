@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "codex-quota-warmup",
+      "name": "Codex Quota Warmup",
+      "description": "Polls Codex 5-hour quota and starts the next window with a tiny account-pinned request when quota is fully available, with Telegram notifications and a management status page.",
+      "author": "madwind",
+      "version": "0.1.0",
+      "repository": "https://github.com/madwind/cpa-plugin-codex-quota-warmup",
+      "homepage": "https://github.com/madwind/cpa-plugin-codex-quota-warmup",
+      "license": "MIT",
+      "tags": [
+        "Codex",
+        "Quota",
+        "Warmup",
+        "Telegram",
+        "Management"
+      ]
+    }
+  ]
+}

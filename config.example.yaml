@@ -1,0 +1,31 @@
+plugins:
+  enabled: true
+  dir: plugins
+
+  # Third-party store source. The official CPA store remains enabled.
+  store-sources:
+    - https://raw.githubusercontent.com/madwind/cpa-plugin-codex-quota-warmup/main/registry.json
+
+  configs:
+    codex-quota-warmup:
+      enabled: true
+      interval: "30m"
+      initial_delay: "15s"
+      model: "gpt-5.6-luna"
+      ping_text: "ping"
+      max_output_tokens: 16
+      full_used_percent: 0
+      min_warm_interval: "4h45m"
+
+      # Recommended for containers so a restart does not re-warm the same quota cycle.
+      state_file: "/data/codex-quota-warmup-state.json"
+
+      # Prefer the environment variables for the bot token/chat ID:
+      # CPA_CODEX_WARMUP_TELEGRAM_BOT_TOKEN
+      # CPA_CODEX_WARMUP_TELEGRAM_CHAT_ID
+      # telegram_bot_token: ""
+      # telegram_chat_id: ""
+
+      notify_success: true
+      notify_failure: true
+      notify_poll_failures: false
