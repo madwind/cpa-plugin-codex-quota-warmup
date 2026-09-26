@@ -22,13 +22,13 @@ func (fn managementHandlerFunc) HandleManagement(ctx context.Context, req plugin
 func managementRegistration() pluginapi.ManagementRegistrationResponse {
 	return pluginapi.ManagementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
-			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/status", Description: "Return quota warm-up status.", Handler: managementHandlerFunc(statusHandler)},
-			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/check", Description: "Run an immediate quota check.", Handler: managementHandlerFunc(checkHandler)},
-			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/ping", Description: "Force a warm-up request for one Codex auth.", Handler: managementHandlerFunc(pingHandler)},
-			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/telegram/test", Description: "Send a Telegram test message.", Handler: managementHandlerFunc(telegramTestHandler)},
+			{Method: http.MethodGet, Path: "/plugins/" + pluginID + "/status", Description: "Return quota warm-up status."},
+			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/check", Description: "Run an immediate quota check."},
+			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/ping", Description: "Force a warm-up request for one Codex auth."},
+			{Method: http.MethodPost, Path: "/plugins/" + pluginID + "/telegram/test", Description: "Send a Telegram test message."},
 		},
 		Resources: []pluginapi.ResourceRoute{
-			{Path: "/status", Menu: "Codex Quota Warmup", Description: "Codex quota status, manual check, warm-up and Telegram diagnostics.", Handler: managementHandlerFunc(resourceHandler)},
+			{Path: "/status", Menu: "Codex Quota Warmup", Description: "Codex quota status, manual check, warm-up and Telegram diagnostics."},
 		},
 	}
 }
