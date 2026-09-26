@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -13,8 +12,11 @@ import (
 )
 
 const (
-	codexUsageURL         = "https://chatgpt.com/backend-api/wham/usage"
-	targetShortWindowSecs = int64(5 * time.Hour / time.Second)
+	codexUsageURL          = "https://chatgpt.com/backend-api/wham/usage"
+	fiveHourWindowSecs     = int64(5 * time.Hour / time.Second)
+	weeklyWindowSecs       = int64(7 * 24 * time.Hour / time.Second)
+	minMonthlyWindowSecs   = int64(28 * 24 * time.Hour / time.Second)
+	maxMonthlyWindowSecs   = int64(31 * 24 * time.Hour / time.Second)
 )
 
 type whamUsage struct {
@@ -37,18 +39,44 @@ type quotaWindow struct {
 	ResetAt           int64    `json:"reset_at"`
 }
 
-type quotaSnapshot struct {
-	PlanType    string
+type quotaWindowSnapshot struct {
+	ID          string
+	Label       string
 	UsedPercent float64
 	Remaining   float64
-	WindowName  string
 	WindowSecs  int64
 	ResetAt     time.Time
 	IsFull      bool
 }
 
+type quotaSnapshot struct {
+	PlanType string
+	Windows  []quotaWindowSnapshot
+}
+
+func (q quotaSnapshot) fullWindowIDs() []string {
+	out := make([]string, 0, len(q.Windows))
+	for _, window := range q.Windows {
+		if window.IsFull {
+			out = append(out, window.ID)
+		}
+	}
+	return out
+}
+
+func (q quotaSnapshot) fullWindowLabels() []string {
+	out := make([]string, 0, len(q.Windows))
+	for _, window := range q.Windows {
+		if window.IsFull {
+			out = append(out, window.Label)
+		}
+	}
+	return out
+}
+
 // fetchQuotaViaCPA always performs a fresh quota probe through CPA host callbacks.
-// No locally recorded quota value is used to decide whether an account is full.
+// No locally recorded quota value is used to decide whether an account has a newly
+// available quota window.
 func fetchQuotaViaCPA(ctx context.Context, cfg pluginConfig, auth pluginapi.HostAuthFileEntry) (quotaSnapshot, error) {
 	if strings.TrimSpace(auth.AuthIndex) == "" {
 		return quotaSnapshot{}, fmt.Errorf("missing auth_index")
@@ -83,59 +111,74 @@ func fetchQuotaViaCPA(ctx context.Context, cfg pluginConfig, auth pluginapi.Host
 	if err := json.Unmarshal(resp.Body, &usage); err != nil {
 		return quotaSnapshot{}, fmt.Errorf("decode wham/usage: %w", err)
 	}
-	window, name := selectShortWindow(usage.RateLimit)
-	if window == nil || window.UsedPercent == nil {
-		return quotaSnapshot{}, fmt.Errorf("wham/usage did not contain a usable 5h quota window")
+
+	windows := trackedQuotaWindows(usage.RateLimit, cfg.FullUsedPercent, time.Now())
+	if len(windows) == 0 {
+		return quotaSnapshot{}, fmt.Errorf("wham/usage did not contain a usable 5h, weekly, or monthly quota window")
 	}
 
-	used := clamp(*window.UsedPercent, 0, 100)
-	resetAt := resolveResetAt(window, time.Now())
 	return quotaSnapshot{
-		PlanType:    strings.TrimSpace(usage.PlanType),
-		UsedPercent: used,
-		Remaining:   100 - used,
-		WindowName:  name,
-		WindowSecs:  windowDurationSeconds(window),
-		ResetAt:     resetAt,
-		IsFull:      quotaFull(usage.RateLimit, window, cfg.FullUsedPercent),
+		PlanType: strings.TrimSpace(usage.PlanType),
+		Windows:  windows,
 	}, nil
 }
 
-func selectShortWindow(rate whamRateLimit) (*quotaWindow, string) {
+func trackedQuotaWindows(rate whamRateLimit, threshold float64, now time.Time) []quotaWindowSnapshot {
 	type candidate struct {
-		name   string
-		window *quotaWindow
+		position string
+		window   *quotaWindow
 	}
-	candidates := []candidate{{"primary", rate.PrimaryWindow}, {"secondary", rate.SecondaryWindow}}
+	candidates := []candidate{
+		{position: "primary", window: rate.PrimaryWindow},
+		{position: "secondary", window: rate.SecondaryWindow},
+	}
 
-	var best *quotaWindow
-	bestName := ""
-	bestDistance := int64(math.MaxInt64)
+	out := make([]quotaWindowSnapshot, 0, len(candidates))
 	for _, candidate := range candidates {
-		if candidate.window == nil || candidate.window.UsedPercent == nil {
+		window := candidate.window
+		if window == nil || window.UsedPercent == nil {
 			continue
 		}
-		seconds := windowDurationSeconds(candidate.window)
-		if seconds <= 0 {
+		id, label := classifyQuotaWindow(candidate.position, window)
+		if id == "" {
 			continue
 		}
-		distance := abs64(seconds - targetShortWindowSecs)
-		if distance < bestDistance {
-			best = candidate.window
-			bestName = candidate.name
-			bestDistance = distance
+		used := clamp(*window.UsedPercent, 0, 100)
+		out = append(out, quotaWindowSnapshot{
+			ID:          id,
+			Label:       label,
+			UsedPercent: used,
+			Remaining:   100 - used,
+			WindowSecs:  windowDurationSeconds(window),
+			ResetAt:     resolveResetAt(window, now),
+			IsFull:      quotaFull(rate, window, threshold),
+		})
+	}
+	return out
+}
+
+func classifyQuotaWindow(position string, window *quotaWindow) (string, string) {
+	seconds := windowDurationSeconds(window)
+	switch {
+	case seconds == fiveHourWindowSecs:
+		return "five-hour", "5h"
+	case seconds == weeklyWindowSecs:
+		return "weekly", "Weekly"
+	case seconds >= minMonthlyWindowSecs && seconds <= maxMonthlyWindowSecs:
+		return "monthly", "Monthly"
+	}
+
+	// Legacy Codex payloads may omit durations. Preserve the conventional
+	// primary/secondary meaning without pretending the secondary is weekly/monthly.
+	if seconds == 0 {
+		switch position {
+		case "primary":
+			return "five-hour", "5h"
+		case "secondary":
+			return "secondary", "Secondary"
 		}
 	}
-	if best != nil {
-		return best, formatWindowName(bestName, best)
-	}
-	if rate.PrimaryWindow != nil && rate.PrimaryWindow.UsedPercent != nil {
-		return rate.PrimaryWindow, "primary"
-	}
-	if rate.SecondaryWindow != nil && rate.SecondaryWindow.UsedPercent != nil {
-		return rate.SecondaryWindow, "secondary"
-	}
-	return nil, ""
+	return "", ""
 }
 
 func quotaFull(rate whamRateLimit, window *quotaWindow, threshold float64) bool {
@@ -177,33 +220,12 @@ func resolveResetAt(window *quotaWindow, now time.Time) time.Time {
 	return time.Time{}
 }
 
-func formatWindowName(base string, window *quotaWindow) string {
-	seconds := windowDurationSeconds(window)
-	switch {
-	case seconds == targetShortWindowSecs:
-		return base + " (5h)"
-	case seconds > 0 && seconds%int64(24*time.Hour/time.Second) == 0:
-		return fmt.Sprintf("%s (%dd)", base, seconds/int64(24*time.Hour/time.Second))
-	case seconds > 0 && seconds%int64(time.Hour/time.Second) == 0:
-		return fmt.Sprintf("%s (%dh)", base, seconds/int64(time.Hour/time.Second))
-	default:
-		return base
-	}
-}
-
 func clamp(value, minValue, maxValue float64) float64 {
 	if value < minValue {
 		return minValue
 	}
 	if value > maxValue {
 		return maxValue
-	}
-	return value
-}
-
-func abs64(value int64) int64 {
-	if value < 0 {
-		return -value
 	}
 	return value
 }

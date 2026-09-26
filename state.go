@@ -7,26 +7,32 @@ import (
 )
 
 type accountObservation struct {
-	FullTriggered bool
-	LastWarmAt    time.Time
+	TriggeredWindows map[string]bool
+	LastWarmAt       time.Time
+}
+
+type quotaWindowStatus struct {
+	ID            string     `json:"id"`
+	Label         string     `json:"label"`
+	UsedPercent   float64    `json:"used_percent"`
+	Remaining     float64    `json:"remaining_percent"`
+	WindowSeconds int64      `json:"window_seconds,omitempty"`
+	ResetAt       *time.Time `json:"reset_at,omitempty"`
 }
 
 type accountStatus struct {
-	AuthID        string     `json:"auth_id"`
-	AuthIndex     string     `json:"auth_index,omitempty"`
-	Name          string     `json:"name"`
-	Email         string     `json:"email,omitempty"`
-	Disabled      bool       `json:"disabled"`
-	Unavailable   bool       `json:"unavailable"`
-	PlanType      string     `json:"plan_type,omitempty"`
-	UsedPercent   *float64   `json:"used_percent,omitempty"`
-	Remaining     *float64   `json:"remaining_percent,omitempty"`
-	Window        string     `json:"window,omitempty"`
-	ResetAt       *time.Time `json:"reset_at,omitempty"`
-	LastCheckedAt *time.Time `json:"last_checked_at,omitempty"`
-	LastWarmAt    *time.Time `json:"last_warm_at,omitempty"`
-	Status        string     `json:"status"`
-	Error         string     `json:"error,omitempty"`
+	AuthID        string              `json:"auth_id"`
+	AuthIndex     string              `json:"auth_index,omitempty"`
+	Name          string              `json:"name"`
+	Email         string              `json:"email,omitempty"`
+	Disabled      bool                `json:"disabled"`
+	Unavailable   bool                `json:"unavailable"`
+	PlanType      string              `json:"plan_type,omitempty"`
+	Windows       []quotaWindowStatus `json:"windows,omitempty"`
+	LastCheckedAt *time.Time          `json:"last_checked_at,omitempty"`
+	LastWarmAt    *time.Time          `json:"last_warm_at,omitempty"`
+	Status        string              `json:"status"`
+	Error         string              `json:"error,omitempty"`
 }
 
 type runSummary struct {
@@ -48,45 +54,80 @@ type runtimeSnapshot struct {
 	TelegramConfigured bool            `json:"telegram_configured"`
 	NextCheck          *time.Time      `json:"next_check,omitempty"`
 	LastRun            *runSummary     `json:"last_run,omitempty"`
+	LastWarmAt         *time.Time      `json:"last_warm_at,omitempty"`
+	TotalRuns          uint64          `json:"total_runs"`
+	TotalChecks        uint64          `json:"total_checks"`
+	TotalWarmups       uint64          `json:"total_warmups"`
+	TotalFailures      uint64          `json:"total_failures"`
 	Accounts           []accountStatus `json:"accounts"`
 }
 
 var runtimeState = struct {
 	sync.RWMutex
-	observations map[string]accountObservation
-	accounts     map[string]accountStatus
-	running      bool
-	nextCheck    time.Time
-	lastRun      *runSummary
+	observations  map[string]accountObservation
+	accounts      map[string]accountStatus
+	running       bool
+	nextCheck     time.Time
+	lastRun       *runSummary
+	lastWarmAt    time.Time
+	totalRuns     uint64
+	totalChecks   uint64
+	totalWarmups  uint64
+	totalFailures uint64
 }{
 	observations: map[string]accountObservation{},
 	accounts:     map[string]accountStatus{},
 }
 
-// observeQuota records only the transition guard. The quota value itself is never
-// cached as the source of truth; every worker cycle obtains a fresh value through CPA.
-// The return value reports whether the current full state was already triggered.
-func observeQuota(key string, full bool) bool {
+// observeQuotaWindows updates the per-window transition guard.
+// It returns true when at least one currently-full quota window has not yet
+// triggered a warm-up. Windows that are no longer full have their guard cleared.
+func observeQuotaWindows(key string, fullWindowIDs []string) bool {
 	runtimeState.Lock()
 	defer runtimeState.Unlock()
 
 	obs := runtimeState.observations[key]
-	if !full {
-		obs.FullTriggered = false
-		runtimeState.observations[key] = obs
-		return false
+	if obs.TriggeredWindows == nil {
+		obs.TriggeredWindows = map[string]bool{}
 	}
-	return obs.FullTriggered
+
+	current := make(map[string]bool, len(fullWindowIDs))
+	for _, id := range fullWindowIDs {
+		if id != "" {
+			current[id] = true
+		}
+	}
+	for id := range obs.TriggeredWindows {
+		if !current[id] {
+			delete(obs.TriggeredWindows, id)
+		}
+	}
+
+	needsWarm := false
+	for id := range current {
+		if !obs.TriggeredWindows[id] {
+			needsWarm = true
+		}
+	}
+
+	runtimeState.observations[key] = obs
+	return needsWarm
 }
 
-func markWarmSuccess(key string, quotaWasFull bool, at time.Time) {
+func markWarmSuccess(key string, fullWindowIDs []string, at time.Time) {
 	runtimeState.Lock()
 	obs := runtimeState.observations[key]
-	if quotaWasFull {
-		obs.FullTriggered = true
+	if obs.TriggeredWindows == nil {
+		obs.TriggeredWindows = map[string]bool{}
+	}
+	for _, id := range fullWindowIDs {
+		if id != "" {
+			obs.TriggeredWindows[id] = true
+		}
 	}
 	obs.LastWarmAt = at.UTC()
 	runtimeState.observations[key] = obs
+	runtimeState.lastWarmAt = at.UTC()
 
 	status := runtimeState.accounts[key]
 	warm := at.UTC()
@@ -127,6 +168,11 @@ func runtimeStatusSnapshot(cfg pluginConfig) runtimeSnapshot {
 		value := *runtimeState.lastRun
 		last = &value
 	}
+	var lastWarm *time.Time
+	if !runtimeState.lastWarmAt.IsZero() {
+		value := runtimeState.lastWarmAt
+		lastWarm = &value
+	}
 	return runtimeSnapshot{
 		Version:            pluginVersion,
 		Running:            runtimeState.running,
@@ -136,6 +182,11 @@ func runtimeStatusSnapshot(cfg pluginConfig) runtimeSnapshot {
 		TelegramConfigured: telegramConfigured(cfg),
 		NextCheck:          next,
 		LastRun:            last,
+		LastWarmAt:         lastWarm,
+		TotalRuns:          runtimeState.totalRuns,
+		TotalChecks:        runtimeState.totalChecks,
+		TotalWarmups:       runtimeState.totalWarmups,
+		TotalFailures:      runtimeState.totalFailures,
 		Accounts:           accounts,
 	}
 }

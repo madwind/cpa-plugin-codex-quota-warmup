@@ -62,7 +62,7 @@ func runWorker(ctx context.Context, cfg pluginConfig) {
 		}
 	}
 
-	runCheck(ctx, cfg, "scheduled", false, "")
+	runCheck(ctx, cfg)
 	ticker := time.NewTicker(cfg.intervalDuration)
 	defer ticker.Stop()
 	for {
@@ -71,7 +71,7 @@ func runWorker(ctx context.Context, cfg pluginConfig) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			runCheck(ctx, cfg, "scheduled", false, "")
+			runCheck(ctx, cfg)
 		}
 	}
 }
@@ -96,20 +96,24 @@ func finishRun(summary runSummary) {
 	runtimeState.Lock()
 	runtimeState.running = false
 	runtimeState.lastRun = &summary
+	runtimeState.totalRuns++
+	runtimeState.totalChecks += uint64(summary.Checked)
+	runtimeState.totalWarmups += uint64(summary.Warmed)
+	runtimeState.totalFailures += uint64(summary.Failed)
 	runtimeState.Unlock()
 }
 
-func runCheck(ctx context.Context, cfg pluginConfig, mode string, forceWarm bool, onlyAuthID string) runSummary {
-	summary := runSummary{StartedAt: time.Now().UTC(), Mode: mode}
+func runCheck(ctx context.Context, cfg pluginConfig) runSummary {
+	summary := runSummary{StartedAt: time.Now().UTC(), Mode: "scheduled"}
 	if !claimRun() {
 		summary.FinishedAt = time.Now().UTC()
 		return summary
 	}
-	return runCheckClaimed(ctx, cfg, mode, forceWarm, onlyAuthID)
+	return runCheckClaimed(ctx, cfg)
 }
 
-func runCheckClaimed(ctx context.Context, cfg pluginConfig, mode string, forceWarm bool, onlyAuthID string) (summary runSummary) {
-	summary = runSummary{StartedAt: time.Now().UTC(), Mode: mode}
+func runCheckClaimed(ctx context.Context, cfg pluginConfig) (summary runSummary) {
+	summary = runSummary{StartedAt: time.Now().UTC(), Mode: "scheduled"}
 	defer func() {
 		summary.FinishedAt = time.Now().UTC()
 		finishRun(summary)
@@ -128,9 +132,6 @@ func runCheckClaimed(ctx context.Context, cfg pluginConfig, mode string, forceWa
 	for _, auth := range auths {
 		if ctx.Err() != nil {
 			break
-		}
-		if onlyAuthID != "" && auth.ID != onlyAuthID {
-			continue
 		}
 
 		key := accountKey(auth)
@@ -160,7 +161,6 @@ func runCheckClaimed(ctx context.Context, cfg pluginConfig, mode string, forceWa
 		summary.Checked++
 		checkedAt := time.Now().UTC()
 
-		// The decision always starts with a fresh quota read through CPA.
 		quota, err := fetchQuotaViaCPA(ctx, cfg, auth)
 		if err != nil {
 			base.Status = "quota_error"
@@ -175,25 +175,30 @@ func runCheckClaimed(ctx context.Context, cfg pluginConfig, mode string, forceWa
 			continue
 		}
 
-		used := quota.UsedPercent
-		remaining := quota.Remaining
 		base.PlanType = quota.PlanType
-		base.UsedPercent = &used
-		base.Remaining = &remaining
-		base.Window = quota.WindowName
 		base.LastCheckedAt = &checkedAt
-		if !quota.ResetAt.IsZero() {
-			reset := quota.ResetAt
-			base.ResetAt = &reset
+		base.Windows = make([]quotaWindowStatus, 0, len(quota.Windows))
+		for _, window := range quota.Windows {
+			item := quotaWindowStatus{
+				ID:            window.ID,
+				Label:         window.Label,
+				UsedPercent:   window.UsedPercent,
+				Remaining:     window.Remaining,
+				WindowSeconds: window.WindowSecs,
+			}
+			if !window.ResetAt.IsZero() {
+				reset := window.ResetAt
+				item.ResetAt = &reset
+			}
+			base.Windows = append(base.Windows, item)
 		}
 
-		alreadyTriggered := observeQuota(key, quota.IsFull)
-		shouldWarm := forceWarm || (quota.IsFull && !alreadyTriggered)
-		if !shouldWarm {
-			switch {
-			case quota.IsFull && alreadyTriggered:
+		fullIDs := quota.fullWindowIDs()
+		needsWarm := observeQuotaWindows(key, fullIDs)
+		if !needsWarm {
+			if len(fullIDs) > 0 {
 				base.Status = "full_already_triggered"
-			default:
+			} else {
 				base.Status = "waiting"
 			}
 			updateAccount(key, base)
@@ -211,48 +216,37 @@ func runCheckClaimed(ctx context.Context, cfg pluginConfig, mode string, forceWa
 			base.Error = err.Error()
 			updateAccount(key, base)
 			summary.Failed++
-			pluginLog("warm-up failed account=%s: %v", authDisplay(auth), err)
+			pluginLog("warm-up failed account=%s windows=%s: %v", authDisplay(auth), strings.Join(quota.fullWindowLabels(), ","), err)
 			if cfg.notifyFailureValue && telegramConfigured(cfg) {
 				_ = sendTelegram(ctx, cfg, fmt.Sprintf(
-					"❌ CPA Codex warm-up failed\nAccount: %s\n5h remaining: %.2f%%\nError: %v",
-					authDisplay(auth), quota.Remaining, err,
+					"❌ CPA Codex warm-up failed\nAccount: %s\nWindows: %s\nError: %v",
+					authDisplay(auth), strings.Join(quota.fullWindowLabels(), ", "), err,
 				))
 			}
 			continue
 		}
 
 		warmedAt := time.Now().UTC()
-		markWarmSuccess(key, quota.IsFull, warmedAt)
+		markWarmSuccess(key, fullIDs, warmedAt)
 		base.Status = "warmed"
 		base.Error = ""
 		base.LastWarmAt = &warmedAt
 		updateAccount(key, base)
 		summary.Warmed++
-		pluginLog("warm-up success account=%s remaining_before=%.2f%%", authDisplay(auth), quota.Remaining)
+		pluginLog("warm-up success account=%s windows=%s", authDisplay(auth), strings.Join(quota.fullWindowLabels(), ","))
 
 		if cfg.notifySuccessValue && telegramConfigured(cfg) {
 			message := fmt.Sprintf(
-				"✅ CPA Codex warm-up\nAccount: %s\n5h remaining before ping: %.2f%%\nModel: %s\nAction: ping sent",
-				authDisplay(auth), quota.Remaining, cfg.Model,
+				"✅ CPA Codex warm-up\nAccount: %s\nWindows: %s\nModel: %s\nAction: ping sent",
+				authDisplay(auth), strings.Join(quota.fullWindowLabels(), ", "), cfg.Model,
 			)
 			if quota.PlanType != "" {
 				message += "\nPlan: " + quota.PlanType
-			}
-			if !quota.ResetAt.IsZero() {
-				message += "\nReset: " + quota.ResetAt.Format(time.RFC3339)
 			}
 			_ = sendTelegram(ctx, cfg, message)
 		}
 	}
 	return summary
-}
-
-func startAsyncRun(cfg pluginConfig, mode string, forceWarm bool, onlyAuthID string) bool {
-	if !claimRun() {
-		return false
-	}
-	go runCheckClaimed(context.Background(), cfg, mode, forceWarm, onlyAuthID)
-	return true
 }
 
 func accountKey(auth pluginapi.HostAuthFileEntry) string {

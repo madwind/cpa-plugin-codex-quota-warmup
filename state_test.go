@@ -5,26 +5,26 @@ import (
 	"time"
 )
 
-func TestFullTransitionGuard(t *testing.T) {
+func TestWindowTransitionGuard(t *testing.T) {
 	key := "transition-test"
 	runtimeState.Lock()
 	delete(runtimeState.observations, key)
 	delete(runtimeState.accounts, key)
 	runtimeState.Unlock()
 
-	if already := observeQuota(key, true); already {
-		t.Fatal("first observed full state must be eligible")
+	if needsWarm := observeQuotaWindows(key, []string{"five-hour", "weekly"}); !needsWarm {
+		t.Fatal("first observed full windows must be eligible")
 	}
 
-	markWarmSuccess(key, true, time.Now())
-	if already := observeQuota(key, true); !already {
-		t.Fatal("same full state must not trigger twice")
+	markWarmSuccess(key, []string{"five-hour", "weekly"}, time.Now())
+	if needsWarm := observeQuotaWindows(key, []string{"five-hour", "weekly"}); needsWarm {
+		t.Fatal("same full windows must not trigger twice")
 	}
 
-	if already := observeQuota(key, false); already {
-		t.Fatal("not-full observation must clear full-state guard")
+	if needsWarm := observeQuotaWindows(key, []string{"weekly"}); needsWarm {
+		t.Fatal("still-full weekly window must remain guarded")
 	}
-	if already := observeQuota(key, true); already {
-		t.Fatal("a later transition back to full must be eligible again")
+	if needsWarm := observeQuotaWindows(key, []string{"five-hour", "weekly"}); !needsWarm {
+		t.Fatal("5h transition back to full must become eligible again")
 	}
 }
