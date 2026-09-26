@@ -10,12 +10,13 @@ Every `interval` (default `30m`) the plugin:
 
 1. Lists enabled Codex credentials from CPA.
 2. Performs a fresh Codex quota probe through CPA host callbacks.
-3. Reads the current 5-hour window.
-4. If the live quota is not full, it does nothing.
-5. If the live quota is full and this continuous full state has not already triggered, it sends one tiny request through CPA, pinned to that exact `AuthID`.
-6. It keeps only an in-memory transition guard so the same still-full observation does not repeatedly ping when upstream quota percentages are slow to update.
+3. Reads the main Codex quota windows: 5-hour plus the secondary weekly or monthly window when present.
+4. If no tracked window has just returned to fully available, it does nothing.
+5. If any tracked window is fully available and that continuous full state has not already triggered, it sends one tiny request through CPA, pinned to that exact `AuthID`.
+6. One request marks every simultaneously-full tracked window as warmed, preventing duplicate pings.
+7. It keeps only in-memory per-window transition guards; no quota state is persisted.
 
-The plugin does **not** persist quota values, does not infer that quota is full from elapsed time, and does not need a separate `/data` volume or state file.
+The plugin does **not** persist quota values, does not infer resets from elapsed time, and does not need a separate `/data` volume or state file.
 
 If CPA/plugin process restarts while the upstream quota still reports 100% available, the first fresh check after restart can trigger once again. That is an intentional tradeoff for keeping the plugin stateless on disk.
 
@@ -84,28 +85,26 @@ CPA_CODEX_WARMUP_TELEGRAM_CHAT_ID
 
 The YAML keys `telegram_bot_token` and `telegram_chat_id` are also accepted.
 
-## Management UI
+## Status UI
 
-When enabled, the official CPA Management Center can expose the plugin resource menu **Codex Quota Warmup**.
+When enabled, the official CPA Management Center exposes **Codex Quota Warmup** as a read-only resource page.
 
-The public resource page contains no quota/account data. It asks for the CPA Management Key and keeps it only in the browser tab's `sessionStorage`, then calls the authenticated plugin Management API.
+The page is rendered directly from the plugin's in-memory runtime state. It does **not** call Management API endpoints and does **not** require a Management Key. It shows:
 
-Endpoints:
+- worker status, selected model and polling interval
+- last check, next check and last successful warm-up
+- cumulative runs/checks/warm-ups/failures since process start
+- anonymous per-account 5-hour and weekly/monthly quota windows
 
-```text
-GET  /v0/management/plugins/codex-quota-warmup/status
-POST /v0/management/plugins/codex-quota-warmup/check
-POST /v0/management/plugins/codex-quota-warmup/ping
-POST /v0/management/plugins/codex-quota-warmup/telegram/test
+CPA resource routes are browser-navigable without Management API authentication, so the page deliberately hides e-mail addresses, auth IDs and file names.
 
-GET  /v0/resource/plugins/codex-quota-warmup/status
-```
+There are no manual **Check Now**, **Ping**, or **Telegram Test** actions. The plugin is intentionally background-first.
 
-`POST .../ping` body:
+### Model selection
 
-```json
-{"auth_id":"<CPA auth ID>"}
-```
+CPA plugin configuration supports enum fields, so `model` is presented as a dropdown in the official Management Center. The current release includes the visible Codex text-model IDs known at build time.
+
+CPA currently exposes `host.model.execute` but no `host.model.list` callback, so a plugin cannot populate this dropdown dynamically from CPA's live model registry. Direct YAML configuration can still provide a model string when needed.
 
 ## CPA quota API note
 

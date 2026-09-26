@@ -49,6 +49,16 @@ func stopWorker() {
 }
 
 func runWorker(ctx context.Context, cfg pluginConfig) {
+	runtimeState.Lock()
+	runtimeState.workerActive = true
+	runtimeState.Unlock()
+	defer func() {
+		runtimeState.Lock()
+		runtimeState.workerActive = false
+		runtimeState.nextCheck = time.Time{}
+		runtimeState.Unlock()
+	}()
+
 	pluginLog("started interval=%s model=%s", cfg.Interval, cfg.Model)
 
 	if cfg.initialDelayDuration > 0 {

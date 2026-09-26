@@ -47,6 +47,7 @@ type runSummary struct {
 
 type runtimeSnapshot struct {
 	Version            string          `json:"version"`
+	WorkerActive       bool            `json:"worker_active"`
 	Running            bool            `json:"running"`
 	Interval           string          `json:"interval"`
 	Model              string          `json:"model"`
@@ -66,6 +67,7 @@ var runtimeState = struct {
 	sync.RWMutex
 	observations  map[string]accountObservation
 	accounts      map[string]accountStatus
+	workerActive  bool
 	running       bool
 	nextCheck     time.Time
 	lastRun       *runSummary
@@ -175,6 +177,7 @@ func runtimeStatusSnapshot(cfg pluginConfig) runtimeSnapshot {
 	}
 	return runtimeSnapshot{
 		Version:            pluginVersion,
+		WorkerActive:       runtimeState.workerActive,
 		Running:            runtimeState.running,
 		Interval:           cfg.Interval,
 		Model:              cfg.Model,
