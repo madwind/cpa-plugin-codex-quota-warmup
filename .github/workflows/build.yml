@@ -66,7 +66,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'release: v'))
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -76,16 +76,18 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Verify tag
+      - name: Resolve release tag
+        id: release
         shell: bash
         run: |
           set -euo pipefail
           version="$(python3 -c 'import json; print(json.load(open("registry.json"))["plugins"][0]["version"])')"
-          tag="$GITHUB_REF_NAME"
-          if [[ "${tag#v}" != "${version#v}" ]]; then
-            echo "tag $tag does not match registry version $version" >&2
+          tag="v${version#v}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]] && [[ "$GITHUB_REF_NAME" != "$tag" ]]; then
+            echo "tag $GITHUB_REF_NAME does not match registry version $version" >&2
             exit 1
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Generate checksums
         shell: bash
@@ -97,15 +99,16 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/* \
+            gh release create "$RELEASE_TAG" dist/* \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "$GITHUB_REF_NAME" \
+              --title "$RELEASE_TAG" \
               --generate-notes
           fi
