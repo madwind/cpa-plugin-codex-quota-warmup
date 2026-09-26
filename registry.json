@@ -6,7 +6,7 @@
       "name": "Codex Quota Warmup",
       "description": "Checks each Codex account's live 5-hour quota through CPA and sends one tiny account-pinned request when quota becomes fully available, with Telegram notifications and a management status page.",
       "author": "madwind",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "repository": "https://github.com/madwind/cpa-plugin-codex-quota-warmup",
       "homepage": "https://github.com/madwind/cpa-plugin-codex-quota-warmup",
       "license": "MIT",

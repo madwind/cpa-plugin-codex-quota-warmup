@@ -132,17 +132,17 @@ CGO_ENABLED=1 go build -buildmode=c-shared -trimpath -o codex-quota-warmup.so .
 rm -f codex-quota-warmup.h
 ```
 
-To publish `0.1.0`, push tag:
+To publish `0.1.1`, push tag:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 GitHub Actions creates:
 
 ```text
-codex-quota-warmup_0.1.0_linux_amd64.zip
+codex-quota-warmup_0.1.1_linux_amd64.zip
 checksums.txt
 ```
 

@@ -70,7 +70,7 @@ const (
 	pluginRepo = "https://github.com/madwind/cpa-plugin-codex-quota-warmup"
 )
 
-var pluginVersion = "0.1.0"
+var pluginVersion = "0.1.1"
 
 type envelope struct {
 	OK     bool            `json:"ok"`
