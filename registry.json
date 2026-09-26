@@ -4,7 +4,7 @@
     {
       "id": "codex-quota-warmup",
       "name": "Codex Quota Warmup",
-      "description": "Polls Codex 5-hour quota and starts the next window with a tiny account-pinned request when quota is fully available, with Telegram notifications and a management status page.",
+      "description": "Checks each Codex account's live 5-hour quota through CPA and sends one tiny account-pinned request when quota becomes fully available, with Telegram notifications and a management status page.",
       "author": "madwind",
       "version": "0.1.0",
       "repository": "https://github.com/madwind/cpa-plugin-codex-quota-warmup",

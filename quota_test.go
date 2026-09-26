@@ -1,9 +1,6 @@
 package main
 
-import (
-	"testing"
-	"time"
-)
+import "testing"
 
 func TestSelectShortWindow(t *testing.T) {
 	five := 0.0
@@ -34,13 +31,5 @@ func TestQuotaFullRespectsAllowedAndLimitReached(t *testing.T) {
 	reached = true
 	if quotaFull(whamRateLimit{Allowed: &allowed, LimitReached: &reached}, window, 0) {
 		t.Fatal("limit-reached quota must not warm")
-	}
-}
-
-func TestResetKeyUsesMinutePrecision(t *testing.T) {
-	a := time.Date(2026, 9, 26, 12, 34, 1, 0, time.UTC)
-	b := time.Date(2026, 9, 26, 12, 34, 59, 0, time.UTC)
-	if makeResetKey(a) != makeResetKey(b) {
-		t.Fatalf("expected same reset key: %q != %q", makeResetKey(a), makeResetKey(b))
 	}
 }

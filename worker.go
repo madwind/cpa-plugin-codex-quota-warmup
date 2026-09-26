@@ -18,7 +18,6 @@ var workerControl = struct {
 
 func restartWorker(cfg pluginConfig) {
 	stopWorker()
-	loadPersistentState(cfg.StateFile)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -133,6 +132,7 @@ func runCheckClaimed(ctx context.Context, cfg pluginConfig, mode string, forceWa
 		if onlyAuthID != "" && auth.ID != onlyAuthID {
 			continue
 		}
+
 		key := accountKey(auth)
 		base := accountStatus{
 			AuthID:      auth.ID,
@@ -159,7 +159,9 @@ func runCheckClaimed(ctx context.Context, cfg pluginConfig, mode string, forceWa
 
 		summary.Checked++
 		checkedAt := time.Now().UTC()
-		quota, err := fetchQuota(ctx, cfg, auth)
+
+		// The decision always starts with a fresh quota read through CPA.
+		quota, err := fetchQuotaViaCPA(ctx, cfg, auth)
 		if err != nil {
 			base.Status = "quota_error"
 			base.Error = err.Error()
@@ -185,19 +187,13 @@ func runCheckClaimed(ctx context.Context, cfg pluginConfig, mode string, forceWa
 			base.ResetAt = &reset
 		}
 
-		persisted := getPersistent(key)
-		shouldWarm := forceWarm || quota.IsFull
-		if !forceWarm && shouldWarm {
-			if quota.ResetKey != "" && persisted.LastResetKey == quota.ResetKey {
-				shouldWarm = false
-				base.Status = "already_warmed_cycle"
-			} else if cfg.minWarmDuration > 0 && !persisted.LastWarmAt.IsZero() && time.Since(persisted.LastWarmAt) < cfg.minWarmDuration {
-				shouldWarm = false
-				base.Status = "warm_guard"
-			}
-		}
+		alreadyTriggered := observeQuota(key, quota.IsFull)
+		shouldWarm := forceWarm || (quota.IsFull && !alreadyTriggered)
 		if !shouldWarm {
-			if base.Status == "idle" {
+			switch {
+			case quota.IsFull && alreadyTriggered:
+				base.Status = "full_already_triggered"
+			default:
 				base.Status = "waiting"
 			}
 			updateAccount(key, base)
@@ -226,13 +222,14 @@ func runCheckClaimed(ctx context.Context, cfg pluginConfig, mode string, forceWa
 		}
 
 		warmedAt := time.Now().UTC()
-		markWarmed(key, quota.ResetKey, cfg.StateFile, warmedAt)
+		markWarmSuccess(key, quota.IsFull, warmedAt)
 		base.Status = "warmed"
 		base.Error = ""
 		base.LastWarmAt = &warmedAt
 		updateAccount(key, base)
 		summary.Warmed++
 		pluginLog("warm-up success account=%s remaining_before=%.2f%%", authDisplay(auth), quota.Remaining)
+
 		if cfg.notifySuccessValue && telegramConfigured(cfg) {
 			message := fmt.Sprintf(
 				"✅ CPA Codex warm-up\nAccount: %s\n5h remaining before ping: %.2f%%\nModel: %s\nAction: ping sent",

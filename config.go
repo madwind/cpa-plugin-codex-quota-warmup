@@ -18,8 +18,6 @@ type pluginConfig struct {
 	PingText           string  `yaml:"ping_text"`
 	MaxOutputTokens    int     `yaml:"max_output_tokens"`
 	FullUsedPercent    float64 `yaml:"full_used_percent"`
-	MinWarmInterval    string  `yaml:"min_warm_interval"`
-	StateFile          string  `yaml:"state_file"`
 	TelegramBotToken   string  `yaml:"telegram_bot_token"`
 	TelegramChatID     string  `yaml:"telegram_chat_id"`
 	NotifySuccess      *bool   `yaml:"notify_success"`
@@ -28,7 +26,6 @@ type pluginConfig struct {
 
 	intervalDuration     time.Duration
 	initialDelayDuration time.Duration
-	minWarmDuration      time.Duration
 	notifySuccessValue   bool
 	notifyFailureValue   bool
 }
@@ -44,7 +41,6 @@ func defaultConfig() pluginConfig {
 		PingText:        "ping",
 		MaxOutputTokens: 16,
 		FullUsedPercent: 0,
-		MinWarmInterval: "4h45m",
 		NotifySuccess:   &yes,
 		NotifyFailure:   &yes,
 	}
@@ -77,8 +73,6 @@ func (cfg *pluginConfig) normalize() error {
 	cfg.InitialDelay = strings.TrimSpace(cfg.InitialDelay)
 	cfg.Model = strings.TrimSpace(cfg.Model)
 	cfg.PingText = strings.TrimSpace(cfg.PingText)
-	cfg.MinWarmInterval = strings.TrimSpace(cfg.MinWarmInterval)
-	cfg.StateFile = strings.TrimSpace(cfg.StateFile)
 	cfg.TelegramBotToken = strings.TrimSpace(cfg.TelegramBotToken)
 	cfg.TelegramChatID = strings.TrimSpace(cfg.TelegramChatID)
 
@@ -96,9 +90,6 @@ func (cfg *pluginConfig) normalize() error {
 	}
 	if cfg.MaxOutputTokens == 0 {
 		cfg.MaxOutputTokens = 16
-	}
-	if cfg.MinWarmInterval == "" {
-		cfg.MinWarmInterval = "4h45m"
 	}
 
 	if cfg.TelegramBotToken == "" {
@@ -123,10 +114,6 @@ func (cfg *pluginConfig) normalize() error {
 	cfg.initialDelayDuration, err = time.ParseDuration(cfg.InitialDelay)
 	if err != nil || cfg.initialDelayDuration < 0 {
 		return errors.New("initial_delay must be a valid non-negative duration")
-	}
-	cfg.minWarmDuration, err = time.ParseDuration(cfg.MinWarmInterval)
-	if err != nil || cfg.minWarmDuration < 0 {
-		return errors.New("min_warm_interval must be a valid non-negative duration")
 	}
 
 	cfg.notifySuccessValue = cfg.NotifySuccess == nil || *cfg.NotifySuccess

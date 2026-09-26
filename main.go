@@ -184,8 +184,6 @@ func pluginRegistration() registration {
 				{Name: "ping_text", Type: pluginapi.ConfigFieldTypeString, Description: "Warm-up prompt. Default: ping."},
 				{Name: "max_output_tokens", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum output tokens for the warm-up request. Default: 16."},
 				{Name: "full_used_percent", Type: pluginapi.ConfigFieldTypeNumber, Description: "Warm when 5h used_percent is at or below this value. Default: 0."},
-				{Name: "min_warm_interval", Type: pluginapi.ConfigFieldTypeString, Description: "Fallback duplicate guard when quota percentages round to 0. Default: 4h45m."},
-				{Name: "state_file", Type: pluginapi.ConfigFieldTypeString, Description: "Optional persistent state file. Recommended for containers."},
 				{Name: "telegram_chat_id", Type: pluginapi.ConfigFieldTypeString, Description: "Optional Telegram chat ID. Can also use CPA_CODEX_WARMUP_TELEGRAM_CHAT_ID."},
 				{Name: "notify_success", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Send Telegram after a successful automatic warm-up. Default: true."},
 				{Name: "notify_failure", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Send Telegram when an automatic warm-up fails. Default: true."},

@@ -44,11 +44,12 @@ type quotaSnapshot struct {
 	WindowName  string
 	WindowSecs  int64
 	ResetAt     time.Time
-	ResetKey    string
 	IsFull      bool
 }
 
-func fetchQuota(ctx context.Context, cfg pluginConfig, auth pluginapi.HostAuthFileEntry) (quotaSnapshot, error) {
+// fetchQuotaViaCPA always performs a fresh quota probe through CPA host callbacks.
+// No locally recorded quota value is used to decide whether an account is full.
+func fetchQuotaViaCPA(ctx context.Context, cfg pluginConfig, auth pluginapi.HostAuthFileEntry) (quotaSnapshot, error) {
 	if strings.TrimSpace(auth.AuthIndex) == "" {
 		return quotaSnapshot{}, fmt.Errorf("missing auth_index")
 	}
@@ -96,7 +97,6 @@ func fetchQuota(ctx context.Context, cfg pluginConfig, auth pluginapi.HostAuthFi
 		WindowName:  name,
 		WindowSecs:  windowDurationSeconds(window),
 		ResetAt:     resetAt,
-		ResetKey:    makeResetKey(resetAt),
 		IsFull:      quotaFull(usage.RateLimit, window, cfg.FullUsedPercent),
 	}, nil
 }
@@ -175,13 +175,6 @@ func resolveResetAt(window *quotaWindow, now time.Time) time.Time {
 		return now.UTC().Add(time.Duration(window.ResetAfterSeconds) * time.Second)
 	}
 	return time.Time{}
-}
-
-func makeResetKey(resetAt time.Time) string {
-	if resetAt.IsZero() {
-		return ""
-	}
-	return fmt.Sprintf("reset:%d", resetAt.UTC().Truncate(time.Minute).Unix())
 }
 
 func formatWindowName(base string, window *quotaWindow) string {

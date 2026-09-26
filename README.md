@@ -1,33 +1,36 @@
 # CPA Codex Quota Warmup
 
-A CLIProxyAPI native plugin that polls each Codex OAuth account's 5-hour quota and sends one tiny, account-pinned request after the quota window is fully available again. It can notify Telegram and exposes a status page in the official CPA Management Center.
+A CLIProxyAPI native plugin that periodically checks each Codex OAuth account's current 5-hour quota through CPA and sends one tiny, account-pinned request when that quota is fully available. It can notify Telegram and exposes a status page in the official CPA Management Center.
+
+## Decision model
+
+CPA quota is the source of truth.
+
+Every `interval` (default `30m`) the plugin:
+
+1. Lists enabled Codex credentials from CPA.
+2. Performs a fresh Codex quota probe through CPA host callbacks.
+3. Reads the current 5-hour window.
+4. If the live quota is not full, it does nothing.
+5. If the live quota is full and this continuous full state has not already triggered, it sends one tiny request through CPA, pinned to that exact `AuthID`.
+6. It keeps only an in-memory transition guard so the same still-full observation does not repeatedly ping when upstream quota percentages are slow to update.
+
+The plugin does **not** persist quota values, does not infer that quota is full from elapsed time, and does not need a separate `/data` volume or state file.
+
+If CPA/plugin process restarts while the upstream quota still reports 100% available, the first fresh check after restart can trigger once again. That is an intentional tradeoff for keeping the plugin stateless on disk.
 
 ## Why this design
 
 - Keeps upstream CLIProxyAPI and the official Management Center unchanged.
 - Uses CPA's native plugin ABI and host callbacks.
-- Uses `host.auth.list` / `host.auth.get` only to query the Codex quota endpoint.
-- The real warm-up request uses CPA's own `host.model.execute`, `ForcedProvider=codex`, and the exact `AuthID`, so it follows CPA's normal Codex executor/OAuth path and cannot randomly hit another account.
+- Quota decisions are based on a fresh upstream quota result obtained through CPA, not on locally persisted state.
+- The warm-up request uses CPA's own `host.model.execute`, `ForcedProvider=codex`, and the exact `AuthID`.
 - Does not write or modify CPA auth files.
-- Persistent state contains only the auth key, last successful warm-up time, and reset-cycle key; it never stores OAuth tokens.
-
-## Behavior
-
-Every `interval` (default `30m`) the plugin:
-
-1. Lists enabled Codex credentials from CPA.
-2. Reads each credential's access token transiently in memory.
-3. Queries `https://chatgpt.com/backend-api/wham/usage` through CPA's host HTTP callback.
-4. Selects the rate-limit window closest to five hours.
-5. If `used_percent <= full_used_percent` (default `0`) and the account is allowed/not exhausted, it checks duplicate guards.
-6. Sends a tiny Responses request through CPA, pinned to the exact auth ID.
-7. Stores the successful cycle marker and optionally sends a Telegram notification.
-
-The `min_warm_interval` guard (default `4h45m`) protects against quota percentages rounding back to `0% used` immediately after a tiny warm-up request.
+- Does not persist OAuth tokens or quota state.
 
 ## Plugin Store source
 
-After this repository exists and has a release, add its registry to CPA:
+Add the registry to CPA:
 
 ```yaml
 plugins:
@@ -43,6 +46,17 @@ Then install **Codex Quota Warmup** from the CPA Plugin Store and restart CPA if
 
 ## Configuration
 
+Only enabling the plugin is required:
+
+```yaml
+plugins:
+  configs:
+    codex-quota-warmup:
+      enabled: true
+```
+
+Optional overrides:
+
 ```yaml
 plugins:
   configs:
@@ -54,8 +68,6 @@ plugins:
       ping_text: "ping"
       max_output_tokens: 16
       full_used_percent: 0
-      min_warm_interval: "4h45m"
-      state_file: "/data/codex-quota-warmup-state.json"
       notify_success: true
       notify_failure: true
       notify_poll_failures: false
@@ -95,28 +107,17 @@ GET  /v0/resource/plugins/codex-quota-warmup/status
 {"auth_id":"<CPA auth ID>"}
 ```
 
-## State file
+## CPA quota API note
 
-For containers, mount the configured state path on persistent storage. Example:
+CLIProxyAPI v7.3.18 does not currently expose a `host.quota.fetch` callback that lets one native plugin invoke another registered quota provider directly.
 
-```yaml
-state_file: "/data/codex-quota-warmup-state.json"
-```
+The official Management Center's Codex quota page also obtains current usage by asking CPA to make an authenticated request to `https://chatgpt.com/backend-api/wham/usage`. This plugin follows the same live-probe principle through CPA host callbacks: it gets the credential from CPA, has CPA perform the HTTP request, and makes the warm-up decision only from that fresh response.
 
-Stored data is intentionally minimal:
+The warm-up model request itself is executed entirely through CPA's Codex executor and exact `AuthID`.
 
-```json
-{
-  "accounts": {
-    "<auth-id>": {
-      "last_warm_at": "2026-09-26T12:34:56Z",
-      "last_reset_key": "reset:1790425800"
-    }
-  }
-}
-```
+### Per-credential proxy note
 
-No access token, refresh token, account token, Management Key, or Telegram token is written to this file.
+The warm-up model request follows the selected credential's CPA executor/routing behavior. The current generic `host.http.do` callback used for the quota probe does not expose a credential-specific proxy argument. If different Codex credentials are intentionally pinned to different proxies, quota probing needs an additional CPA host capability or another auth-scoped request path to preserve that distinction.
 
 ## Build
 
@@ -138,7 +139,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-GitHub Actions creates the standard CPA Plugin Store release assets:
+GitHub Actions creates:
 
 ```text
 codex-quota-warmup_0.1.0_linux_amd64.zip
@@ -148,7 +149,3 @@ checksums.txt
 ## Compatibility
 
 The initial release targets the CPA v7 plugin ABI available in CLIProxyAPI v7.3.18. The binary communicates with CPA through the C ABI/JSON RPC host-callback boundary rather than Go's `plugin` package.
-
-### Quota request proxy note
-
-The warm-up model request is executed by CPA for the exact credential, so CPA owns normal Codex routing/executor behavior. The lightweight `wham/usage` polling request is made through CPA's generic host HTTP callback; current CPA does not expose a credential-specific proxy argument for that callback.
